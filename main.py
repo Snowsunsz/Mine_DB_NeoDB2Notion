@@ -2,10 +2,17 @@ import pandas as pd
 import re
 import datetime
 from pathlib import Path
-from typing import Dict, List
+from typing import List
 import requests
+from lxml import html
 from lxml import etree
 from concurrent.futures import ThreadPoolExecutor
+import os
+from notion_client import Client  # 导入 Notion Client
+
+# --------------------  Notion API 相关的配置  --------------------
+NOTION_TOKEN = os.environ.get("NOTION_TOKEN")  # 从环境变量中获取 Notion Token
+NOTION_DATABASE_ID = os.environ.get("NOTION_DATABASE_ID")  # 从环境变量中获取 Database ID
 
 # 常量定义
 MERGE_GROUPS = {
@@ -201,13 +208,61 @@ def export_to_csv(input_file: str, user_date: datetime.datetime) -> None:
             # 获取封面链接
             df["封面"] = process_urls_multithreaded(df["NeoDB链接"])
 
-            # 输出最终CSV文件
-            output_file_name = f"zout_final_{sheet}.csv"
-            df.to_csv(output_file_name, index=False, encoding='utf-8-sig')
-            print(f"更新后的数据已保存到'{output_file_name}'文件中。")
+            # # 输出最终CSV文件 (注释掉，不再生成 CSV 文件)
+            # output_file_name = f"zout_final_{sheet}.csv"
+            # df.to_csv(output_file_name, index=False, encoding='utf-8-sig')
+            # print(f"更新后的数据已保存到'{output_file_name}'文件中。")
+
+            # 将数据上传到 Notion
+            upload_to_notion(df,sheet)
 
         except Exception as e:
             print(f"处理 {sheet} 时出错: {str(e)}")
+
+def upload_to_notion(df: pd.DataFrame,sheet:str):
+    """将 DataFrame 的数据上传到 Notion database."""
+    notion = Client(auth=NOTION_TOKEN)  # 初始化 Notion 客户端
+
+    for index, row in df.iterrows():
+        try:
+            properties = {}
+            for column in df.columns:
+                # 根据 Notion database 的属性类型设置不同的值
+                value = row[column]
+
+                # 处理 NaN 值
+                if pd.isna(value):
+                    value = None
+
+                if column == "豆瓣评分":  # 假设豆瓣评分是数字
+                    properties[column] = {"number": value if value is not None else None}
+                elif column == "标签" or column == "Status":  # 假设标签是文本
+                    properties[column] = {"title": [{"text": {"content": str(value)}}]}  # 使用 title 类型
+                elif column == "创建时间":  # 假设创建时间是日期
+                     if value is not None:
+                        properties[column] = {"date": {"start": value.isoformat()}}
+                     else :
+                        properties[column] =  {"date": None}
+                elif column == "封面": # 假设封面链接是URL
+                    properties[column] = {"url": value}
+
+                else:  # 默认当作文本处理
+                    properties[column] = {"rich_text": [{"text": {"content": str(value)}}]}  # 使用 rich_text 类型
+
+
+            # 创建 Notion 页面
+            notion.pages.create(
+                **{
+                    "parent": {"database_id": NOTION_DATABASE_ID},
+                    "properties": properties,
+                }
+            )
+
+            print(f"成功上传一行数据到Notion sheet:{sheet}")
+
+        except Exception as e:
+            print(f"上传数据到Notion失败：{e} , row:{index} , sheet:{sheet}")
+
 
 def main() -> None:
     # 合并NeoDB数据
